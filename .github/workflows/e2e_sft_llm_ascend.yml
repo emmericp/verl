@@ -71,10 +71,10 @@ permissions:
 jobs:
   e2e_sft_llm_ascend:
     if: github.repository_owner == 'verl-project'
-    runs-on: linux-aarch64-a2b3-8
+    runs-on: linux-aarch64-a3-800i-8
     timeout-minutes: 90 # Increase this timeout value as needed
     container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-910b-ubuntu
+      image: swr.cn-southwest-2.myhuaweicloud.com/modelfoundry/ascend-ci/verl/verl:latest-vllm-a3-ubuntu
       options: >-
         --shm-size 16g
     env:
@@ -97,17 +97,16 @@ jobs:
       - name: Install the current repository
         run: |
           pip install --no-deps -e .
-          pip install veomni==0.1.11 --ignore-requires-python --no-deps --index-url https://pypi.org/simple/
-          pip install transformers==5.5.3
+          pip install "veomni @ git+https://github.com/ByteDance-Seed/VeOmni.git@10a26aca258f91a7af3e698cc0db8c6c51705989" --ignore-requires-python --no-deps --index-url https://pypi.org/simple/
           pip install pandas==2.3.3
-          pip uninstall -y mbridge
-          pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10
+          # Match the Transformers version used to generate the pinned VeOmni models.
+          pip install "transformers==5.16.1" --index-url https://pypi.tuna.tsinghua.edu.cn/simple/
       - name: Check final pip list
         run: |
           pip list
       - name: Prepare weights
         run: |
-          ln -s /root/.cache/models ~/models
+          ln -s /root/.cache/modelscope/hub/models ~/models
       - name: Prepare gsm8k dataset
         run: |
           python3 examples/data_preprocess/gsm8k_multiturn_sft.py --local_dataset_path ${HOME}/.cache/datasets/openai/gsm8k
@@ -154,8 +153,8 @@ jobs:
           BACKEND=veomni SP_SIZE=2 FSDP_SIZE=4 NUM_GPUS=8 FSDP_STRATEGY=fsdp2 bash tests/special_e2e/sft/run_sft_engine.sh
           # test with megatron
           echo "run with tp2 pp2 vpp2 cp2 num_gpus8"
-          BACKEND=megatron VANILLA_MBRIDGE=True TP_SIZE=2 PP_SIZE=2 VPP_SIZE=NULL CP_SIZE=2 NUM_GPUS=8 bash tests/special_e2e/sft/run_sft_engine.sh
+          BACKEND=megatron TP_SIZE=2 PP_SIZE=2 VPP_SIZE=NULL CP_SIZE=2 NUM_GPUS=8 bash tests/special_e2e/sft/run_sft_engine.sh
           # test with cp in ray
           echo "run with tp2 pp2 vpp2 cp2 num_gpus8 mode=ray"
-          BACKEND=megatron VANILLA_MBRIDGE=True TP_SIZE=2 PP_SIZE=2 VPP_SIZE=NULL CP_SIZE=2 NUM_GPUS=8 mode=ray bash tests/special_e2e/sft/run_sft_engine.sh
+          BACKEND=megatron TP_SIZE=2 PP_SIZE=2 VPP_SIZE=NULL CP_SIZE=2 NUM_GPUS=8 mode=ray bash tests/special_e2e/sft/run_sft_engine.sh
           rm -rf ~/verl/test/log

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import functools
 import logging
 import os
@@ -31,6 +32,7 @@ from verl.checkpoint_engine import CheckpointEngineRegistry
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
 from verl.trainer.distillation import distillation_ppo_loss, is_distillation_enabled
+from verl.trainer.ppo.score_centering import score_centering_ppo_loss
 from verl.utils import tensordict_utils as tu
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_device_name, get_torch_device, set_expandable_segments
@@ -638,6 +640,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.loss_fn = partial(
                     distillation_ppo_loss, config=actor_config, distillation_config=distillation_config
                 )
+            elif (actor_config.policy_loss.get("rollout_correction", None) or {}).get("score_centering", False):
+                self.loss_fn = partial(score_centering_ppo_loss, config=actor_config)
             else:
                 self.loss_fn = partial(ppo_loss, config=actor_config)
             self.actor = self.actor_worker_cls(config=actor_training_config)
@@ -765,7 +769,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             return metrics or {}
 
         set_expandable_segments(False)
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().empty_cache()
         log_gpu_memory_usage("Before resume weights", logger=logger)
 
         # 1. resume rollout memory (weights were released during sleep)
@@ -809,10 +813,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # 3. offload model to cpu
         if self.actor.engine.is_param_offload_enabled:
             self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().synchronize()
+        get_torch_device().empty_cache()
+        log_gpu_memory_usage("After offload model to cpu", logger=logger)
 
         # 4. resume kv_cache
         if self.config.rollout.free_cache_engine:
+            # All trainer ranks enter this naive sync path via ONE_TO_ALL. Wait for
+            # their offload and device cleanup before a leader wakes the rollout
+            # workers; local device synchronization alone cannot prevent OOM on peers.
+            await asyncio.to_thread(torch.distributed.barrier)
             await self.rollout.resume(tags=["kv_cache"])
         log_gpu_memory_usage("After resume kv_cache", logger=logger)
 
